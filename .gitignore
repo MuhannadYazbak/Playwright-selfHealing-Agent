@@ -34,6 +34,7 @@ yarn-error.log*
 .env.*
 # Absolute paths from the root workspace
 /backend/venv/
+venv/
 /backend/__pycache__/
 /.next/
 /node_modules/
