@@ -3,6 +3,7 @@ import sys
 import asyncio
 import threading
 import json
+from datetime import datetime
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,10 +27,60 @@ client = OpenAI(
     api_key=os.getenv("OPENROUTER_API_KEY")
 )
 
+# --- GLOBAL HELPER: PLAYWRIGHT CODE GENERATOR ---
+def generate_playwright_test(test_suite_name: str, target_url: str, execution_stream: list) -> str:
+    """
+    Translates the autonomous execution stream into a static Playwright TypeScript test file.
+    """
+    safe_name = test_suite_name.replace('"', '\\"')
+    
+    test_code = [
+        "import { test, expect } from '@playwright/test';",
+        "",
+        f"test('{safe_name}', async ({{ page }}) => {{",
+        "  // Set default timeout for dynamic elements",
+        "  test.setTimeout(60000);",
+        "",
+        f"  // 🌐 Navigate to target application",
+        f"  await page.goto('{target_url}');",
+        "  await page.waitForLoadState('domcontentloaded');",
+        ""
+    ]
+    
+    for step in execution_stream:
+        if step.get("status") == "action_success":
+            msg = step.get("message", "")
+            timestamp = step.get("timestamp", "Action")
+            
+            # Match actions parsed by the engine run execution strings
+            if "Executed click on:" in msg:
+                selector = msg.split("Executed click on:")[1].strip()
+                test_code.append(f"  // ⚡ {timestamp} - Autonomous Click Success")
+                test_code.append(f"  await page.locator(\"{selector}\").click();")
+                test_code.append("  await page.waitForTimeout(1000);")
+                test_code.append("")
+                
+            elif "Executed type on:" in msg:
+                selector = msg.split("Executed type on:")[1].strip()
+                typed_value = step.get("typed_value", "VALUE_HERE")
+                test_code.append(f"  // ⚡ {timestamp} - Autonomous Input Success")
+                test_code.append(f"  await page.locator(\"{selector}\").fill('{typed_value}');")
+                test_code.append("  await page.waitForTimeout(1000);")
+                test_code.append("")
+                
+        elif step.get("status") == "completed":
+            clean_msg = step.get("message", "").replace('"', '\\"')
+            test_code.append("  // ✅ Objective Target Reached Verified By Agent")
+            test_code.append(f"  // Reason: {clean_msg}")
+    
+    test_code.append("});")
+    return "\n".join(test_code)
+
+
 async def extract_interactive_elements(page):
     js_script = """
     () => {
-        const interactiveSelectors = 'button, input, a, select, textarea, [role="button"], [contenteditable="true"]';
+        const interactiveSelectors = 'button, input, a, select, textarea, [role="button"], [contenteditable=\"true\"]';
         const elements = document.querySelectorAll(interactiveSelectors);
         const results = [];
         elements.forEach((el, index) => {
@@ -79,6 +130,7 @@ async def get_next_action_from_ai(objective, elements, execution_history):
     )
     return json.loads(response.choices[0].message.content)
 
+
 # --- THREAD WORKER INNER LOGIC ---
 def run_agent_in_worker_thread(target_url, objective, main_loop, websocket):
     """Runs a dedicated Proactor loop in an isolated background thread context."""
@@ -88,8 +140,13 @@ def run_agent_in_worker_thread(target_url, objective, main_loop, websocket):
     worker_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(worker_loop)
     
-    # Helper to push JSON messages back out through the primary thread's WebSocket
+    # Storage bucket to cache stream telemetry for code conversion processing
+    session_stream = []
+    
     def send_to_frontend(payload):
+        # Dynamically inject timestamp into payloads
+        payload["timestamp"] = datetime.now().strftime("%H:%M:%S")
+        session_stream.append(payload)  # Cache the log event locally
         asyncio.run_coroutine_threadsafe(websocket.send_json(payload), main_loop)
 
     async def core_automation_task():
@@ -103,20 +160,16 @@ def run_agent_in_worker_thread(target_url, objective, main_loop, websocket):
                 page = await browser.new_page()
                 
                 send_to_frontend({"status": "info", "message": f"✈️ Navigating to {target_url}..."})
-                # Wait only until the basic HTML structure is loaded, rather than every image asset
                 await page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
-                # 🛡️ Wait until the main body or product view container is loaded
+                
                 try:
-                    # If your site uses a specific main class or selector, you can change 'body' to that selector (e.g., '.main-content')
                     await page.wait_for_selector("body", state="visible", timeout=10000)
-                    # Give dynamic Client-Side React hydration an extra second to settle down
                     await asyncio.sleep(2)
                 except Exception:
                     send_to_frontend({"status": "info", "message": "⚠️ Main layout container loading timed out. Proceeding anyway..."})
                 
                 for step in range(1, max_steps + 1):
                     send_to_frontend({"status": "step_start", "step": step})
-                    
                     elements = await extract_interactive_elements(page)
                     
                     send_to_frontend({"status": "thinking", "message": "🤖 AI is computing next action..."})
@@ -140,26 +193,17 @@ def run_agent_in_worker_thread(target_url, objective, main_loop, websocket):
                     
                     # --- HARDENED MULTI-TIERED SELECTOR GENERATOR ---
                     selectors_to_try = []
-                    
-                    # Strategy 1: Strict ID (If available)
                     if target_el_data.get("idAttribute"):
                         selectors_to_try.append(f"#{target_el_data['idAttribute']}")
-                    
-                    # Strategy 2: Text-Based Semantic Combinations
                     if target_el_data.get("text"):
                         clean_text = target_el_data["text"].replace("'", "\\'")
                         selectors_to_try.append(f"{target_el_data['tagName']}:has-text('{clean_text}')")
                         if target_el_data["tagName"] == "input":
                             selectors_to_try.append(f"input[placeholder='{clean_text}']")
-                    
-                    # Strategy 3: Attribute Configurations
                     if target_el_data.get("type"):
                         selectors_to_try.append(f"{target_el_data['tagName']}[type='{target_el_data['type']}']")
-                    
-                    # Strategy 4: Relative Document Position (The absolute fallback)
                     selectors_to_try.append(f"css={target_el_data['tagName']} >> nth={elements.index(target_el_data)}")
 
-                    # Remove duplicate strings while preserving priority order
                     selectors_to_try = list(dict.fromkeys(selectors_to_try))
                     
                     # --- SELF-HEALING EXECUTION ENGINE ---
@@ -169,21 +213,25 @@ def run_agent_in_worker_thread(target_url, objective, main_loop, websocket):
                     for attempt_idx, selector in enumerate(selectors_to_try):
                         try:
                             if action == "click":
-                                # Fast 3s timeout per selector strategy attempt
                                 await page.click(selector, timeout=3000)
                                 execution_history.append(f"Clicked via selector: {selector}")
+                                send_to_frontend({
+                                    "status": "action_success", 
+                                    "message": f"⚡ [Strategy {attempt_idx + 1}] Executed click on: {selector}"
+                                })
                             elif action == "type":
                                 input_text = ai_decision.get("text", "")
                                 await page.fill(selector, input_text, timeout=3000)
                                 execution_history.append(f"Typed into selector: {selector}")
+                                send_to_frontend({
+                                    "status": "action_success", 
+                                    "message": f"⚡ [Strategy {attempt_idx + 1}] Executed type on: {selector}",
+                                    "typed_value": input_text
+                                })
                             
-                            send_to_frontend({
-                                "status": "action_success", 
-                                "message": f"⚡ [Strategy {attempt_idx + 1}] Executed {action} on: {selector}"
-                            })
                             action_success = True
                             await asyncio.sleep(1.5)
-                            break  # Worked perfectly! Break out of strategy attempts.
+                            break 
                             
                         except Exception as e:
                             last_execution_error = str(e)
@@ -197,6 +245,20 @@ def run_agent_in_worker_thread(target_url, objective, main_loop, websocket):
                         send_to_frontend({"status": "action_failed", "message": error_msg})
                         execution_history.append(f"TOTAL FRAMEWORK FAILURE on element {element_id}")
 
+                # 🔥 EXECUTE COMPILATION TASK BEFORE DEALLOCATING CORE DRIVER 🔥
+                send_to_frontend({"status": "info", "message": "📦 Compiling execution history into static Playwright script..."})
+                generated_spec = generate_playwright_test(
+                    test_suite_name=f"Autonomous Run - {objective}",
+                    target_url=target_url,
+                    execution_stream=session_stream
+                )
+                
+                # Forward spec bundle message down to web socket channel
+                send_to_frontend({
+                    "status": "code_export_ready",
+                    "playwright_code": generated_spec
+                })
+
                 await browser.close()
         except Exception as e:
             send_to_frontend({"status": "error", "message": f"Critical engine crash: {str(e)}"})
@@ -204,12 +266,11 @@ def run_agent_in_worker_thread(target_url, objective, main_loop, websocket):
     worker_loop.run_until_complete(core_automation_task())
     worker_loop.close()
 
+
 @app.websocket("/ws/run-agent")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     print("🔌 Frontend connected to agent stream websocket.")
-    
-    # Grab a pointer to Uvicorn's active main thread event loop
     main_loop = asyncio.get_running_loop()
     
     try:
@@ -218,14 +279,12 @@ async def websocket_endpoint(websocket: WebSocket):
         target_url = config.get("url")
         objective = config.get("objective")
         
-        # Offload Playwright entirely to our clean background thread worker
         threading.Thread(
             target=run_agent_in_worker_thread,
             args=(target_url, objective, main_loop, websocket),
             daemon=True
         ).start()
         
-        # Keep the socket open and clear of blocks while the background thread processes actions
         while True:
             await asyncio.sleep(1)
             

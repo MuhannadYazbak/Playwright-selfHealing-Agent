@@ -15,9 +15,24 @@ export default function Home() {
   const [isRunning, setIsRunning] = useState(false);
   const [logs, setLogs] = useState<LogMessage[]>([]);
   const [currentStep, setCurrentStep] = useState<number | null>(null);
+  const [generatedPlaywrightCode, setGeneratedPlaywrightCode] = useState<string | null>(null);
   
   const socketRef = useRef<WebSocket | null>(null);
   const logEndRef = useRef<HTMLDivElement | null>(null);
+
+  const exportToPlaywright = () => {
+  if (!generatedPlaywrightCode) return;
+  
+  const blob = new Blob([generatedPlaywrightCode], { type: "text/typescript" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `autonomous-run.spec.ts`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
 
   const exportToJSON = () => {
   if (logs.length === 0) return;
@@ -47,6 +62,7 @@ export default function Home() {
   document.body.removeChild(link);
   URL.revokeObjectURL(downloadUrl);
 };
+
 
   // Auto-scroll logs terminal window to the bottom on active streams
   useEffect(() => {
@@ -81,36 +97,41 @@ export default function Home() {
       socket.send(JSON.stringify({ url, objective }));
     };
 
-    socket.onmessage = (event) => {
-      const packet = jsonParseSafe(event.data);
-      if (!packet) return;
+  socket.onmessage = (event) => {
+  const packet = jsonParseSafe(event.data);
+  if (!packet) return;
 
-      switch (packet.status) {
-        case "info":
-        case "thinking":
-        case "action_success":
-        case "action_failed":
-        case "error":
-          addLog(packet.status, packet.message);
-          break;
-        case "step_start":
-          setCurrentStep(packet.step);
-          addLog("step", `🎬 Starting Execution Framework Step ${packet.step}`);
-          break;
-        case "decision":
-          const decision = packet.data;
-          addLog(
-            "decision",
-            `💡 AI Action: [${decision.action.toUpperCase()}] -> Element: ${decision.elementId || "N/A"}\nReason: ${decision.reason}`
-          );
-          break;
-        case "completed":
-          addLog("completed", packet.message);
-          setIsRunning(false);
-          socket.close();
-          break;
-      }
-    };
+  switch (packet.status) {
+    case "info":
+    case "thinking":
+    case "action_success":
+    case "action_failed":
+    case "error":
+      addLog(packet.status, packet.message);
+      break;
+    case "step_start":
+      setCurrentStep(packet.step);
+      addLog("step", `🎬 Starting Execution Framework Step ${packet.step}`);
+      break;
+    case "decision":
+      const decision = packet.data;
+      addLog(
+        "decision",
+        `💡 AI Action: [${decision.action.toUpperCase()}] -> Element: ${decision.elementId || "N/A"}\nReason: ${decision.reason}`
+      );
+      break;
+    case "completed":
+      addLog("completed", packet.message);
+      setIsRunning(false);
+      // ✂️ REMOVED socket.close(); FROM HERE SO THE BACKEND CAN SEND THE CODE PACKET
+      break;
+    
+    case "code_export_ready":
+      // Now this hook will catch the code safely!
+      setGeneratedPlaywrightCode(packet.playwright_code);
+      break;
+  }
+};
 
     socket.onclose = () => {
       addLog("info", "🔒 Pipeline connection disconnected.");
@@ -195,6 +216,14 @@ export default function Home() {
   >
     📦 Export JSON Report
   </button>
+  {generatedPlaywrightCode && (
+  <button
+    onClick={exportToPlaywright}
+    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors font-medium flex items-center gap-2"
+  >
+    ⚙️ Export Playwright Test
+  </button>
+)}
       <div className="flex gap-4">
   
 

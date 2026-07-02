@@ -1,0 +1,15 @@
+# Environments
+.env
+.env.*
+backend/.env
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Node/Next.js
+node_modules/
+.next/
+out/
