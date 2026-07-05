@@ -20,7 +20,9 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
+        # Point the caching mechanism directly to your backend folder
         cache: 'pip'
+        cache-dependency-path: backend/requirements.txt
 
     - name: Install Backend Dependencies
       run: |
@@ -32,7 +34,6 @@ jobs:
         OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       run: |
         cd backend
-        # Start uvicorn in the background and pipe logs
         nohup uvicorn main:app --host 127.0.0.1 --port 8000 > backend.log 2>&1 &
         echo "Backend starting in background..."
 
@@ -40,7 +41,7 @@ jobs:
     - name: Set up Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '20'
+        node-version: '22'
         cache: 'npm'
         cache-dependency-path: frontend/package-lock.json
 
@@ -59,7 +60,6 @@ jobs:
     # --- ORCHESTRATION & TESTING ---
     - name: Wait for Servers to be Ready
       run: |
-        # Install wait-on globally to safely check local network ports
         npm install -g wait-on
         echo "Waiting for local servers on ports 8000 and 3000..."
         wait-on http://127.0.0.1:8000 http://127.0.0.1:3000 -t 60000
