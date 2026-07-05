@@ -1,0 +1,89 @@
+name: Playwright Self-Healing CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    # --- BACKEND SETUP ---
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+
+    - name: Install Backend Dependencies
+      run: |
+        cd backend
+        pip install -r requirements.txt
+
+    - name: Start FastAPI Backend
+      env:
+        OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      run: |
+        cd backend
+        # Start uvicorn in the background and pipe logs
+        nohup uvicorn main:app --host 127.0.0.1 --port 8000 > backend.log 2>&1 &
+        echo "Backend starting in background..."
+
+    # --- FRONTEND SETUP ---
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+
+    - name: Install Frontend Dependencies
+      run: |
+        cd frontend
+        npm ci
+
+    - name: Build and Start Next.js
+      run: |
+        cd frontend
+        npm run build
+        nohup npm run start -- -p 3000 > frontend.log 2>&1 &
+        echo "Frontend starting in background..."
+
+    # --- ORCHESTRATION & TESTING ---
+    - name: Wait for Servers to be Ready
+      run: |
+        # Install wait-on globally to safely check local network ports
+        npm install -g wait-on
+        echo "Waiting for local servers on ports 8000 and 3000..."
+        wait-on http://127.0.0.1:8000 http://127.0.0.1:3000 -t 60000
+
+    - name: Install Playwright Browsers
+      run: |
+        cd frontend
+        npx playwright install --with-deps
+
+    - name: Run Playwright Tests
+      env:
+        OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      run: |
+        cd frontend
+        npx playwright test
+
+    # --- ERROR ARTIFACTS ---
+    - name: Upload Debug Logs & Test Reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: playwright-execution-debug
+        path: |
+          backend/backend.log
+          frontend/frontend.log
+          frontend/playwright-report/
+        retention-days: 7
