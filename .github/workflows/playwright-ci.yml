@@ -20,6 +20,9 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.13'
+        # Safely re-enabling pip caching now that requirements.txt exists
+        cache: 'pip'
+        cache-dependency-path: backend/requirements.txt
 
     - name: Install Backend Dependencies
       run: |
@@ -39,6 +42,7 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: '22'
+        # Enforce npm caching using the frontend lockfile
         cache: 'npm'
         cache-dependency-path: frontend/package-lock.json
 
@@ -59,8 +63,7 @@ jobs:
       run: |
         npm install -g wait-on
         echo "Waiting for local servers on ports 8000 and 3000..."
-        # Using http-get targeting /docs ensures FastAPI returns a 200 OK
-        wait-on http-get://127.0.0.1:8000/docs http://127.0.0.1:3000 -t 60000
+        wait-on http://127.0.0.1:8000/docs http://127.0.0.1:3000 -t 60000
 
     - name: Install Playwright Browsers
       run: |
