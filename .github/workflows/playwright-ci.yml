@@ -20,9 +20,6 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-        # Point the caching mechanism directly to your backend folder
-        cache: 'pip'
-        cache-dependency-path: backend/requirements.txt
 
     - name: Install Backend Dependencies
       run: |
