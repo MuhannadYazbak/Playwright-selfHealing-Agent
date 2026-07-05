@@ -59,7 +59,8 @@ jobs:
       run: |
         npm install -g wait-on
         echo "Waiting for local servers on ports 8000 and 3000..."
-        wait-on http://127.0.0.1:8000 http://127.0.0.1:3000 -t 60000
+        # Using http-get targeting /docs ensures FastAPI returns a 200 OK
+        wait-on http-get://127.0.0.1:8000/docs http://127.0.0.1:3000 -t 60000
 
     - name: Install Playwright Browsers
       run: |
